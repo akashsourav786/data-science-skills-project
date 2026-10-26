@@ -34,7 +34,7 @@ install.packages(c("tidyverse", "DBI", "RSQLite", "knitr"))
 
 3. Open `project3.qmd` in RStudio and click **Render**.
 
-The SQLite database is generated automatically from the CSV file stored in the `data/` folder.
+The SQLite database is generated automatically from the CSV file stored in the same folder.
 
 ## Conclusion
 
