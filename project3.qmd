@@ -9,7 +9,7 @@ library(tidyverse)
 library(DBI)
 library(RSQLite)
 
-jobs_raw <- read_csv("data/AI Job Market Dataset.csv")
+jobs_raw <- read_csv("AI Job Market Dataset.csv")
 
 names(jobs_raw)
 dim(jobs_raw)
