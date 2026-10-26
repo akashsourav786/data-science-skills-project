@@ -1,0 +1,216 @@
+---
+title: "project3"
+format: html
+editor: visual
+---
+
+```{r}
+library(tidyverse)
+library(DBI)
+library(RSQLite)
+
+jobs_raw <- read_csv("data/AI Job Market Dataset.csv")
+
+names(jobs_raw)
+dim(jobs_raw)
+head(jobs_raw)
+```
+
+## Data Preparation and Database Construction
+
+The dataset contains 10,345 job postings and five technical skill indicators. I will organize these into normalized relational tables to separate job information from skill information.
+
+```{r}
+skill_columns <- c(
+  "skills_python",
+  "skills_sql",
+  "skills_ml",
+  "skills_deep_learning",
+  "skills_cloud"
+)
+
+skill_values <- jobs_raw |>
+  select(job_id, all_of(skill_columns)) |>
+  pivot_longer(
+    cols = all_of(skill_columns),
+    names_to = "skill_name",
+    values_to = "required"
+  ) |>
+  mutate(
+    skill_name = recode(
+      skill_name,
+      skills_python = "Python",
+      skills_sql = "SQL",
+      skills_ml = "Machine Learning",
+      skills_deep_learning = "Deep Learning",
+      skills_cloud = "Cloud Computing"
+    )
+  )
+
+head(skill_values, 10)
+```
+
+## Relational Database
+
+To organize the job-posting data, I created three normalized tables: jobs, skills, and job_skills. This avoids repeating skill names in every job record and creates a many-to-many relationship between jobs and skills.
+
+```{r}
+# Create job information table
+jobs <- jobs_raw |>
+  select(-all_of(skill_columns)) |>
+  distinct(job_id, .keep_all = TRUE)
+
+# Create a unique table for the five skills
+skills <- tibble(
+  skill_id = 1:5,
+  skill_name = c(
+    "Python",
+    "SQL",
+    "Machine Learning",
+    "Deep Learning",
+    "Cloud Computing"
+  )
+)
+
+# Connect each job to its required skills
+job_skills <- skill_values |>
+  filter(required == 1) |>
+  left_join(skills, by = "skill_name") |>
+  select(job_id, skill_id) |>
+  distinct()
+
+# Create SQLite database in memory
+con <- dbConnect(RSQLite::SQLite(), ":memory:")
+
+# Store the three normalized tables
+dbWriteTable(con, "jobs", jobs, overwrite = TRUE)
+dbWriteTable(con, "skills", skills, overwrite = TRUE)
+dbWriteTable(con, "job_skills", job_skills, overwrite = TRUE)
+
+# Verify database tables
+dbListTables(con)
+```
+
+# Count records in each database table
+
+```{r}
+dbGetQuery(con, "
+  SELECT 'jobs' AS table_name, COUNT(*) AS records FROM jobs
+  UNION ALL
+  SELECT 'skills', COUNT(*) FROM skills
+  UNION ALL
+  SELECT 'job_skills', COUNT(*) FROM job_skills
+")
+```
+
+## Exploratory Data Analysis
+
+I measured skill demand using the percentage of job postings requiring each skill.
+
+```{r}
+skill_demand <- dbGetQuery(con, "
+  SELECT
+    s.skill_name,
+    COUNT(js.job_id) AS job_count
+  FROM skills s
+  LEFT JOIN job_skills js ON s.skill_id = js.skill_id
+  GROUP BY s.skill_id, s.skill_name
+  ORDER BY job_count DESC
+") |>
+  mutate(
+    percentage = round(100 * job_count / nrow(jobs), 1)
+  )
+
+knitr::kable(skill_demand)
+```
+
+## Most Requested Skills
+
+```{r}
+ggplot(skill_demand,
+       aes(x = reorder(skill_name, percentage),
+           y = percentage)) +
+  geom_col(fill = "#168C91") +
+  coord_flip() +
+  labs(
+    title = "Most Requested Data Science Skills",
+    x = "Technical Skill",
+    y = "Percentage of Job Postings"
+  ) +
+  theme_minimal()
+```
+
+## Skill Demand by Job Title
+
+```{r}
+job_comparison <- dbGetQuery(con, "
+  SELECT
+    j.job_title,
+    s.skill_name,
+    COUNT(DISTINCT js.job_id) AS skill_count
+  FROM jobs j
+  JOIN job_skills js ON j.job_id = js.job_id
+  JOIN skills s ON js.skill_id = s.skill_id
+  GROUP BY j.job_title, s.skill_name
+") |>
+  left_join(
+    jobs |> count(job_title, name = "total_jobs"),
+    by = "job_title"
+  ) |>
+  mutate(
+    percentage = round(100 * skill_count / total_jobs, 1)
+  )
+
+ggplot(job_comparison,
+       aes(x = skill_name, y = percentage,
+           fill = job_title)) +
+  geom_col(position = "dodge") +
+  coord_flip() +
+  labs(
+    title = "Skill Demand Across Job Categories",
+    x = "Technical Skill",
+    y = "Percentage of Job Postings",
+    fill = "Job Title"
+  ) +
+  theme_minimal()
+```
+
+## Data Quality Checks
+
+```{r}
+# Missing values in each column
+missing_summary <- jobs_raw |>
+  summarise(across(
+    everything(),
+    ~ sum(is.na(.x))
+  )) |>
+  pivot_longer(
+    everything(),
+    names_to = "column",
+    values_to = "missing_count"
+  )
+
+knitr::kable(missing_summary)
+
+# Identify duplicate job IDs
+sum(duplicated(jobs_raw$job_id))
+
+# Check salary distribution and potential outliers
+summary(jobs_raw$salary)
+
+ggplot(jobs_raw, aes(x = salary)) +
+  geom_boxplot(fill = "#168C91") +
+  labs(
+    title = "Salary Distribution and Potential Outliers",
+    x = "Salary (units as reported in source)"
+  ) +
+  theme_minimal()
+```
+
+## Conclusion
+
+The analysis examined `r nrow(jobs)` job postings and five technical skills. The most frequently requested skill was **`r skill_demand$skill_name[1]`**, appearing in **`r skill_demand$percentage[1]`%** of postings. The second most common skill was **`r skill_demand$skill_name[2]`**, appearing in **`r skill_demand$percentage[2]`%** of postings.
+
+The comparison across job titles illustrates how technical skill requirements vary between positions. These results provide an indication of employer demand, but the dataset includes only five skill categories and may not represent the entire job market.
+
+The analysis is exploratory, and skill frequency does not necessarily measure the economic value or importance of a skill.
